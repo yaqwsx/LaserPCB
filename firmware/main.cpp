@@ -147,8 +147,23 @@ public:
     /**
      * Returns raw value of the bitmask
      */
-    void* get_raw() {
+    void* raw() {
         return data;
+    }
+    
+    /**
+     * Returns number of bytes of raw data
+     */
+    constexpr uint32_t raw_size() const {
+        return SIZE;
+    }
+    
+    constexpr uint8_t base_size() const {
+        return sizeof(Base);
+    }
+    
+    constexpr uint32_t size() const {
+        return BITS;
     }
 
     Bit<Base> operator[](uint32_t position) {
@@ -158,7 +173,7 @@ public:
         return Bit<Base>(data[result.quot], result.rem);
     }
 private:
-    static const uint32_t SIZE = ((BITS + sizeof(Base) - 1) / sizeof(Base)) * sizeof(Base);
+    static constexpr uint32_t SIZE = (BITS + sizeof(Base) * 8 - 1) / (sizeof(Base) * 8);
     Base data[SIZE];
     Base garbage; // Garbage for unauthorized accesses via []
 };
@@ -171,9 +186,55 @@ private:
 template <uint32_t PATTERN_SIZE, uint32_t BUFFER_SIZE>
 class Pattern {
 public:
+    Pattern(uint32_t pattern_width, uint32_t pattern_start, uint32_t header_width)
+        : pattern_width(pattern_width), pattern_start(pattern_start), header_width(header_width)
+    {
+        spi_params.spi_baudRatePrescaler = SPI_BaudRatePrescaler_16;
+        spi_params.spi_direction = SPI_Direction_1Line_Tx;
+    }
+
+    void set_pattern_width(uint32_t width) {
+        pattern_width = width;
+    }
+
+    void set_header_width(uint32_t width) {
+        header_width = width;
+    }
+
+    void set_pattern_start(uint32_t start) {
+        pattern_start = start;
+    }
+    
+    Bitmask<PATTERN_SIZE>& get_patern() {
+        return base_pattern;
+    }
+
+    void draw_pattern(uint16_t last_period) {
+        // Init SPI with DMA
+        Spi1<> spi(spi_params);
+        Spi1TxDmaChannel<
+            SpiDmaWriterFeature<
+                Spi1PeripheralTraits, DMA_Priority_High> > dmaSender;
+
+        dmaSender.beginWrite(base_pattern.raw(), base_pattern.raw_size() * base_pattern.base_size());
+        //spi.send((const uint8_t*)base_pattern.raw(), base_pattern.raw_size() * 4);
+
+        dmaSender.waitUntilComplete();
+        spi.waitForIdle();
+
+        // Put pin high
+        GpioA<DefaultDigitalOutputFeature<7>> pa;
+        pa[7].set();
+    }
 private:
     Bitmask<PATTERN_SIZE> base_pattern;
     Bitmask<BUFFER_SIZE>  recalibrated_patterns[2];
+
+    uint32_t pattern_width; // Width in percents of one reflection; 100% = 100 000
+    uint32_t pattern_start; // Start position in percents of one reflection
+    uint32_t header_width;  // Width in percents of one reflection; 100% = 100 000
+    
+    Spi1<>::Parameters spi_params;
 };
 
 GpioC<DefaultDigitalOutputFeature<13>, DefaultDigitalOutputFeature<14> > pc;
@@ -185,6 +246,11 @@ using Spi1Config = Spi1<>;
 const int BUFF_SIZE = 250;
 uint8_t buffer[BUFF_SIZE];
 
+const int PATTERN_SIZE = 3000;
+
+PeriodCounter counter;
+Pattern<PATTERN_SIZE, 2> pattern(10, 10, 10);
+
 int main()
 {
     Nvic::initialise();
@@ -193,54 +259,28 @@ int main()
     Usart1<> usart1(115200);
     UsartPollingOutputStream outputStream(usart1);
 
-    PeriodCounter counter;
-
-    Spi1<>::Parameters spi1_conf;
-    spi1_conf.spi_baudRatePrescaler = SPI_BaudRatePrescaler_16;
-    spi1_conf.spi_direction = SPI_Direction_1Line_Tx;
-
-    unsigned char byte = 0xFF;
-    const int parts = 50;
-    for (int i = 0; i != parts; i++) {
-        byte = ~byte;
-        for (int j = 0; j != BUFF_SIZE / parts; j++) {
-            buffer[i * BUFF_SIZE / parts + j] = byte;
+    const int PARTS = 50;
+    bool state = false;
+    auto& p = pattern.get_patern();
+    for (int i = 0; i != PARTS; i++) {
+        state = !state;
+        for (int j = 0; j != p.size() / PARTS; j++) {
+            p[i * p.size() / PARTS + j] = state;
         }
     }
     
-    for (int i = 0; i != 12; i++)
-        buffer[i] = 0xff;
+    for (int i = 0; i != 150; i++)
+        p[i] = true;
     
     int count = 0;
-    bool state = false;
     pc[DIR].reset();
 	for (;;) {
     	GpioA<DefaultDigitalOutputFeature<7>> pa;
     	pa[7].set();
     	counter.wait_for_pulse();
-    	//Delay::delay(20);
-    	/*for (int i = 0; i != 30; i++) {
-        	pa[7].reset();
-        	Delay::delay(delay);
-        	pa[7].set();
-        	Delay::delay(delay);
-    	}*/
-    	Spi1<> spi(spi1_conf);
-    	spi.send(buffer, BUFF_SIZE);
-		/*pc[STEP].set();
-		MillisecondTimer::delay(1);
-        pc[STEP].reset();
-		MillisecondTimer::delay(1);
-    	count++;
-    	if (count == 16 * 200) {
-        	count = 0;
-        	if (state)
-            	pc[DIR].reset();
-        	else
-            	pc[DIR].set();
-        	state = !state;
-    	}
-    	char buf[15];
+    	pattern.draw_pattern(counter.get_pulse());
+
+    	/*char buf[15];
     	StringUtil::modp_uitoa10(period, buf);
     	outputStream << buf << " us\n";*/
 	}
