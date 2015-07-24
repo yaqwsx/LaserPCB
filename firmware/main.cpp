@@ -8,7 +8,6 @@
 
 #include <stdlib.h>
 
-
 using namespace stm32plus;
 
 /**
@@ -18,9 +17,7 @@ using namespace stm32plus;
 class PeriodCounter {
 public:
     PeriodCounter() {
-        // ToDo: setup base timer clock in such a way that integral prescaler
-        // is used
-        input_timer.setPrescaler(input_timer.getClock() / 10000000 - 1);
+        input_timer.setPrescaler(16); // The same prescaler which is used for SPI
         input_timer.TimerInterruptEventSender.insertSubscriber(
             TimerInterruptEventSourceSlot::bind(this, &PeriodCounter::on_timer_interrupt));
         input_timer.enableInterrupts(TIM_IT_CC1);
@@ -32,6 +29,13 @@ public:
      */
     void wait_for_pulse() {
         while (!triggered);
+        triggered = false;
+    }
+    
+    /**
+     * Clears pulse flag
+     */
+    void clear_pulse_flag() {
         triggered = false;
     }
 
@@ -77,7 +81,7 @@ private:
 template <class BASE>
 class Bit {
 public:
-    Bit(BASE& word, uint8_t position) : word(word), mask(1 << position) {}
+    Bit(BASE& word, uint8_t position) : word(word), mask(__builtin_bswap32(1 << position)) {}
 
     Bit& operator=(bool state) {
         if (state)
@@ -147,8 +151,8 @@ public:
     /**
      * Returns raw value of the bitmask
      */
-    void* raw() {
-        return data;
+    uint8_t* raw() {
+        return (uint8_t*)data;
     }
     
     /**
@@ -187,7 +191,8 @@ template <uint32_t PATTERN_SIZE, uint32_t BUFFER_SIZE>
 class Pattern {
 public:
     Pattern(uint32_t pattern_width, uint32_t pattern_start, uint32_t header_width)
-        : pattern_width(pattern_width), pattern_start(pattern_start), header_width(header_width)
+        : pattern_width(pattern_width), pattern_start(pattern_start),
+          header_width(header_width), index(0)
     {
         spi_params.spi_baudRatePrescaler = SPI_BaudRatePrescaler_16;
         spi_params.spi_direction = SPI_Direction_1Line_Tx;
@@ -204,7 +209,7 @@ public:
     void set_pattern_start(uint32_t start) {
         pattern_start = start;
     }
-    
+
     Bitmask<PATTERN_SIZE>& get_patern() {
         return base_pattern;
     }
@@ -216,40 +221,74 @@ public:
             SpiDmaWriterFeature<
                 Spi1PeripheralTraits, DMA_Priority_High> > dmaSender;
 
-        dmaSender.beginWrite(base_pattern.raw(), base_pattern.raw_size() * base_pattern.base_size());
-        //spi.send((const uint8_t*)base_pattern.raw(), base_pattern.raw_size() * 4);
+        //auto& pat = recalibrated_patterns[index];
+        //dmaSender.beginWrite(pat.raw(), /*pattern_sizes[index]*/100);
+        //spi.send(base_pattern.raw(), 1);
+        dmaSender.beginWrite(base_pattern.raw(), 100);
+
+        // Prepare new image
+        // ToDo:
 
         dmaSender.waitUntilComplete();
         spi.waitForIdle();
 
         // Put pin high
-        GpioA<DefaultDigitalOutputFeature<7>> pa;
-        pa[7].set();
+        //GpioA<DefaultDigitalOutputFeature<7>> pa;
+        //pa[7].set();
+    }
+
+    void recalibrate_pattern(uint16_t period) {
+        if (index++ == 1)
+            index = 0;
+        
+        // Use only 90 % of the period width, so there's extra "safe" time
+        period = period * 9 / 10;
+        pattern_sizes[index] = period / 8;
+
+        auto& pat = recalibrated_patterns[index];
+
+        uint32_t index = 0;
+
+        // Prepare header
+        uint32_t header_end = period * header_width / PERCENT;
+        for (index; index != header_end; index++)
+            pat.set(index);
+        
+        // Recalibrate the pattern
+        uint32_t p_start = period * pattern_start / PERCENT;
+        uint32_t p_width = period * pattern_width / PERCENT;
+        
+        for (index; index != p_start; index++)
+            pat.set(index, false);
+        
+        for (uint32_t i = 0; i != p_width; i++, index++)
+            pat.set(index, base_pattern.get(i * PATTERN_SIZE / p_width));
+        for (index; index != pat.size(); index++)
+            pat.set(index, false);
     }
 private:
     Bitmask<PATTERN_SIZE> base_pattern;
     Bitmask<BUFFER_SIZE>  recalibrated_patterns[2];
+    uint32_t pattern_sizes[2];
+    uint8_t index;
 
     uint32_t pattern_width; // Width in percents of one reflection; 100% = 100 000
     uint32_t pattern_start; // Start position in percents of one reflection
     uint32_t header_width;  // Width in percents of one reflection; 100% = 100 000
     
     Spi1<>::Parameters spi_params;
+    
+    static constexpr uint32_t PERCENT = 100000;
 };
 
 GpioC<DefaultDigitalOutputFeature<13>, DefaultDigitalOutputFeature<14> > pc;
 const int STEP = 13;
 const int DIR = 14;
 
-using Spi1Config = Spi1<>;
-
-const int BUFF_SIZE = 250;
-uint8_t buffer[BUFF_SIZE];
-
 const int PATTERN_SIZE = 3000;
 
 PeriodCounter counter;
-Pattern<PATTERN_SIZE, 2> pattern(10, 10, 10);
+Pattern<PATTERN_SIZE, 4000> pattern(60000, 6000, 5000);
 
 int main()
 {
@@ -258,30 +297,69 @@ int main()
 
     Usart1<> usart1(115200);
     UsartPollingOutputStream outputStream(usart1);
+    
+    while (false) {
+        unsigned char byte = 0x0F;
+        unsigned char buffer[100];
+        for (int i = 0; i != 100; i++) {
+            buffer[i] = byte;
+            byte = ~byte;
+        }
 
-    const int PARTS = 50;
+        Spi1<>::Parameters spi_params;
+        spi_params.spi_baudRatePrescaler = SPI_BaudRatePrescaler_16;
+        spi_params.spi_direction = SPI_Direction_1Line_Tx;
+
+        Spi1<> spi(spi_params);
+        Spi1TxDmaChannel<
+             SpiDmaWriterFeature<
+                   Spi1PeripheralTraits, DMA_Priority_High> > dmaSender;
+
+        dmaSender.beginWrite(buffer, 100);
+        dmaSender.waitUntilComplete();
+        spi.waitForIdle();
+        MillisecondTimer::delay(20);
+    }
+
+    const int PARTS = 100;
     bool state = false;
     auto& p = pattern.get_patern();
-    for (int i = 0; i != PARTS; i++) {
+    for (int i = 0, index = 0; i != PARTS; i++) {
         state = !state;
-        for (int j = 0; j != p.size() / PARTS; j++) {
-            p[i * p.size() / PARTS + j] = state;
+        for (int j = 0; j != p.size() / PARTS; j++, index++) {
+            p[index] = state;
         }
     }
     
     for (int i = 0; i != 150; i++)
         p[i] = true;
     
+    unsigned char byte = 0xF;
+    auto pp = pattern.get_patern().raw();
+    /*for (int i = 0; i != 100; i++) {
+        pp[i] = byte;
+        byte = ~byte;
+    }*/
+    
+    for (int i = 0; i != 100; i++) {
+        for (int u = 7; u >= 0; u--)
+            if (pp[i] & (1 << u))
+                outputStream << "1";
+            else
+                outputStream << "0";
+    }
+    outputStream << "\n";
+    pattern.recalibrate_pattern(3240);
+    pattern.recalibrate_pattern(3240);
+    
     int count = 0;
     pc[DIR].reset();
 	for (;;) {
-    	GpioA<DefaultDigitalOutputFeature<7>> pa;
-    	pa[7].set();
-    	counter.wait_for_pulse();
-    	pattern.draw_pattern(counter.get_pulse());
-
-    	/*char buf[15];
-    	StringUtil::modp_uitoa10(period, buf);
-    	outputStream << buf << " us\n";*/
+    	//GpioA<DefaultDigitalOutputFeature<7>> pa;
+    	//pa[7].set();
+    	//counter.wait_for_pulse();
+    	//uint16_t pulse = counter.get_pulse();
+    	pattern.draw_pattern(0);
+    	counter.clear_pulse_flag();
 	}
 }
