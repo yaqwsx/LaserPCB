@@ -95,11 +95,11 @@ private:
  */
 class Bit {
 public:
-    template <class BASE>
-    Bit(BASE& word, uint8_t position) : bit(BITBAND_SRAM(&word, position)) {}
+    Bit(void* word, uint8_t position) : bit(BITBAND_SRAM(word, position)) {}
 
     Bit& operator=(bool state) {
         *bit = state;
+        return *this;
     }
 
     operator bool() const {
@@ -118,6 +118,14 @@ public:
      */
     void previous() {
         bit--;
+    }
+    
+    /**
+     * Moves by n bits
+     */
+    template <class T>
+    void skip(T inc) {
+        bit += inc;
     }
 private:
     bitband_t bit;
@@ -188,7 +196,7 @@ public:
      * Returns first bit
      */
     Bit front() {
-        return Bit(*data, 0);
+        return Bit(data, 0);
     }
 
     /**
@@ -215,8 +223,8 @@ public:
     Bit operator[](uint32_t position) {
         div_t result = div(position, sizeof(Base) * 8);
         if (result.quot > SIZE)
-            return Bit(garbage, 0);
-        return Bit(data[result.quot], result.rem);
+            return Bit(&garbage, 0);
+        return Bit(&data[result.quot], result.rem);
     }
 private:
     static constexpr uint32_t SIZE = (BITS + sizeof(Base) * 8 - 1) / (sizeof(Base) * 8);
@@ -232,9 +240,8 @@ private:
 template <uint32_t PATTERN_SIZE, uint32_t BUFFER_SIZE, class PATTERN_BASE = uint32_t>
 class Pattern {
 public:
-    Pattern(uint32_t pattern_width, uint32_t pattern_start, uint32_t header_width)
-        : pattern_width(pattern_width), pattern_start(pattern_start),
-          header_width(header_width), index(0)
+    Pattern(uint32_t pattern_width, uint32_t pattern_start)
+        : index(0), pattern_start(pattern_start), pattern_width(pattern_width)
     {
         spi_params.spi_baudRatePrescaler = SPI_BaudRatePrescaler_16;
         spi_params.spi_direction = SPI_Direction_1Line_Tx;
@@ -243,10 +250,6 @@ public:
 
     void set_pattern_width(uint32_t width) {
         pattern_width = width;
-    }
-
-    void set_header_width(uint32_t width) {
-        header_width = width;
     }
 
     void set_pattern_start(uint32_t start) {
@@ -264,7 +267,7 @@ public:
             SpiDmaWriterFeature<
                 Spi1PeripheralTraits, DMA_Priority_High> > dmaSender;
 
-        dmaSender.beginWrite(base_pattern.raw(), base_pattern.raw_size());
+        dmaSender.beginWrite(recalibrated_patterns[index].raw(), pattern_sizes[index]);
 
         // Prepare new image
         // ToDo:
@@ -281,30 +284,37 @@ public:
         if (index++ == 1)
             index = 0;
 
-        // Use only 90 % of the period width, so there's extra "safe" time
-        period = period * 9 / 10;
-        pattern_sizes[index] = period / 8;
+        // Calculate width of the pattern in bytes (round it up)
+        pattern_sizes[index] = ((((pattern_start + pattern_width) * period) / PERCENT) + 7) / 8;
 
         auto& pat = recalibrated_patterns[index];
 
-        uint32_t index = 0;
-
         // Prepare header
-        uint32_t header_end = period * header_width / PERCENT;
-        for (index; index != header_end; index++)
-            pat.set(index);
+        const uint32_t header_bits = period * pattern_start / PERCENT;
+        const div_t result = div(header_bits, 8 * sizeof(uint32_t));
+        uint32_t* raw_header = (uint32_t*)pat.raw();
+        // Set the whole part
+        memset(raw_header, 0xFFFFFFFF, result.quot * sizeof(uint32_t));
+        // Set the partial part
+        Bit bit(raw_header + result.quot, 0);
+        for (uint8_t i = 0; i != result.rem; i++) {
+            bit = true;
+            bit.next();
+        }
 
         // Recalibrate the pattern
-        uint32_t p_start = period * pattern_start / PERCENT;
-        uint32_t p_width = period * pattern_width / PERCENT;
-        
-        for (index; index != p_start; index++)
-            pat.set(index, false);
-        
-        for (uint32_t i = 0; i != p_width; i++, index++)
-            pat.set(index, base_pattern.get(i * PATTERN_SIZE / p_width));
-        for (index; index != pat.size(); index++)
-            pat.set(index, false);
+        const uint32_t pattern_bits = period * pattern_width / PERCENT;
+        const uint32_t target = base_pattern.size() << 16;
+        const uint32_t increment = (base_pattern.size() << 16) / pattern_bits;
+        Bit source(base_pattern.raw(), 0);
+        uint16_t last = 0;
+        for (uint32_t index = 0; index <= target; index += increment) {
+            uint16_t pos = index >> 16;
+            source.skip(pos - last);
+            last = pos;
+            bit = (bool)source;
+            bit.next();
+        }
     }
 private:
     Bitmask<PATTERN_SIZE, PATTERN_BASE> base_pattern;
@@ -312,9 +322,8 @@ private:
     uint32_t pattern_sizes[2];
     uint8_t index;
 
-    uint32_t pattern_width; // Width in percents of one reflection; 100% = 100 000
     uint32_t pattern_start; // Start position in percents of one reflection
-    uint32_t header_width;  // Width in percents of one reflection; 100% = 100 000
+    uint32_t pattern_width; // Width in percents of one reflection; 100% = 100 000
     
     Spi1<>::Parameters spi_params;
     
@@ -328,7 +337,7 @@ const int DIR = 14;
 const int PATTERN_SIZE = 3000;
 
 PeriodCounter counter;
-Pattern<PATTERN_SIZE, 4000> pattern(60000, 6000, 5000);
+Pattern<PATTERN_SIZE, 4000> pattern(60000, 6000);
 
 int main()
 {
@@ -338,17 +347,17 @@ int main()
     Usart1<> usart1(115200);
     UsartPollingOutputStream outputStream(usart1);
 
-    const int PARTS = 10;
+    const unsigned int PARTS = 10;
     bool state = true;
     auto p = pattern.get_patern().front();
-    for (int i = 0, index = 0; i != PARTS; i++) {
+    for (unsigned int i = 0, index = 0; i != PARTS; i++) {
         state = !state;
-        for (int j = 0; j != pattern.get_patern().size() / PARTS; j++, index++, p.next()) {
+        for (unsigned int j = 0; j != pattern.get_patern().size() / PARTS; j++, index++, p.next()) {
             p = state;
         }
     }
     
-    auto pp = pattern.get_patern().raw();
+    //auto pp = pattern.get_patern().raw();
     /*for (int i = 0; i != 128; i++)
         p[i] = true;*/
     
@@ -368,10 +377,9 @@ int main()
                 outputStream << "0";
     }
     outputStream << "\n";*/
-    //pattern.recalibrate_pattern(3240);
-    //pattern.recalibrate_pattern(3240);
+    pattern.recalibrate_pattern(3240);
+    pattern.recalibrate_pattern(3240);
     
-    int count = 0;
     pc[DIR].reset();
 	for (;;) {
     	//GpioA<DefaultDigitalOutputFeature<7>> pa;
