@@ -10,6 +10,21 @@
 
 using namespace stm32plus;
 
+// bitband type
+typedef volatile uint32_t * bitband_t;
+
+// addresses for bit banding
+#define BITBAND_SRAM_REF               		(0x20000000)
+#define BITBAND_SRAM_BASE              		(0x22000000)
+#define BITBAND_PERIPH_REF               	(0x40000000)
+#define BITBAND_PERIPH_BASE              	(0x42000000)
+
+#define BITBAND_SRAM(address, bit)     ((bitband_t)(BITBAND_SRAM_BASE +   \
+		(((uint32_t)address) - BITBAND_SRAM_REF) * 32 + (bit) * 4))
+
+#define BITBAND_PERIPH(address, bit)   ((bitband_t)(BITBAND_PERIPH_BASE + \
+		(((uint32_t)address) - BITBAND_PERIPH_REF) * 32 + (bit) * 4))
+
 /**
  * Measures a period of the mirror rotation. Timer1 is used for capturing,
  * PA08 has to be connected to the pulse source
@@ -78,24 +93,34 @@ private:
 /**
  * This class represents a single bit in word
  */
-template <class BASE>
 class Bit {
 public:
-    Bit(BASE& word, uint8_t position) : word(word), mask(__builtin_bswap32(1 << position)) {}
+    template <class BASE>
+    Bit(BASE& word, uint8_t position) : bit(BITBAND_SRAM(&word, position)) {}
 
     Bit& operator=(bool state) {
-        if (state)
-            word |= mask;
-        else
-            word &= ~mask;
+        *bit = state;
     }
 
     operator bool() const {
-        return word & mask;
+        return *bit;
+    }
+
+    /**
+     * Moves to the next bit
+     */
+    void next() {
+        bit++;
+    }
+
+    /**
+     * Moves to the previous bit
+     */
+    void previous() {
+        bit--;
     }
 private:
-    BASE& word;
-    BASE  mask;
+    bitband_t bit;
 };
 
 /**
@@ -113,7 +138,7 @@ public:
         div_t result = div(position, sizeof(Base) * 8);
         if (result.quot > SIZE)
             return false;
-        return data[result.quot] & (1 << result.rem);
+        return *(BITBAND_SRAM(&data[result.quot], result.rem));
     }
 
     /**
@@ -124,10 +149,7 @@ public:
         div_t result = div(position, sizeof(Base) * 8);
         if (result.quot > SIZE)
             return;
-        if (value)
-            data[result.quot] |= 1 << result.rem;
-        else
-            data[result.quot] &= ~(1 << result.rem);
+        *(BITBAND_SRAM(&data[result.quot], result.rem)) = value;
     }
 
     /**
@@ -154,27 +176,47 @@ public:
     uint8_t* raw() {
         return (uint8_t*)data;
     }
-    
+
+    /**
+     * Returns a raw bit-pointer to array
+     */
+    bitband_t bits() {
+        return *BITBAND_SRAM(data, 0);
+    }
+
+    /**
+     * Returns first bit
+     */
+    Bit front() {
+        return Bit(*data, 0);
+    }
+
     /**
      * Returns number of bytes of raw data
      */
     constexpr uint32_t raw_size() const {
-        return SIZE;
+        return SIZE * sizeof(Base);
     }
-    
+
+    /**
+     * Returns size in bytes of Base type
+     */
     constexpr uint8_t base_size() const {
         return sizeof(Base);
     }
-    
+
+    /**
+     * Returns number of bits in the bitmask
+     */
     constexpr uint32_t size() const {
         return BITS;
     }
 
-    Bit<Base> operator[](uint32_t position) {
+    Bit operator[](uint32_t position) {
         div_t result = div(position, sizeof(Base) * 8);
         if (result.quot > SIZE)
-            return Bit<Base>(garbage, 0);
-        return Bit<Base>(data[result.quot], result.rem);
+            return Bit(garbage, 0);
+        return Bit(data[result.quot], result.rem);
     }
 private:
     static constexpr uint32_t SIZE = (BITS + sizeof(Base) * 8 - 1) / (sizeof(Base) * 8);
@@ -187,7 +229,7 @@ private:
  * and during sending another re-calibrated pattern is calculated.
  * Spi1 is used for sending, so PA07 is used as output for laser driving
  */
-template <uint32_t PATTERN_SIZE, uint32_t BUFFER_SIZE>
+template <uint32_t PATTERN_SIZE, uint32_t BUFFER_SIZE, class PATTERN_BASE = uint32_t>
 class Pattern {
 public:
     Pattern(uint32_t pattern_width, uint32_t pattern_start, uint32_t header_width)
@@ -196,6 +238,7 @@ public:
     {
         spi_params.spi_baudRatePrescaler = SPI_BaudRatePrescaler_16;
         spi_params.spi_direction = SPI_Direction_1Line_Tx;
+        spi_params.spi_firstBit = SPI_FirstBit_LSB;
     }
 
     void set_pattern_width(uint32_t width) {
@@ -210,7 +253,7 @@ public:
         pattern_start = start;
     }
 
-    Bitmask<PATTERN_SIZE>& get_patern() {
+    Bitmask<PATTERN_SIZE, PATTERN_BASE>& get_patern() {
         return base_pattern;
     }
 
@@ -221,10 +264,7 @@ public:
             SpiDmaWriterFeature<
                 Spi1PeripheralTraits, DMA_Priority_High> > dmaSender;
 
-        //auto& pat = recalibrated_patterns[index];
-        //dmaSender.beginWrite(pat.raw(), /*pattern_sizes[index]*/100);
-        //spi.send(base_pattern.raw(), 1);
-        dmaSender.beginWrite(base_pattern.raw(), 100);
+        dmaSender.beginWrite(base_pattern.raw(), base_pattern.raw_size());
 
         // Prepare new image
         // ToDo:
@@ -240,7 +280,7 @@ public:
     void recalibrate_pattern(uint16_t period) {
         if (index++ == 1)
             index = 0;
-        
+
         // Use only 90 % of the period width, so there's extra "safe" time
         period = period * 9 / 10;
         pattern_sizes[index] = period / 8;
@@ -253,7 +293,7 @@ public:
         uint32_t header_end = period * header_width / PERCENT;
         for (index; index != header_end; index++)
             pat.set(index);
-        
+
         // Recalibrate the pattern
         uint32_t p_start = period * pattern_start / PERCENT;
         uint32_t p_width = period * pattern_width / PERCENT;
@@ -267,8 +307,8 @@ public:
             pat.set(index, false);
     }
 private:
-    Bitmask<PATTERN_SIZE> base_pattern;
-    Bitmask<BUFFER_SIZE>  recalibrated_patterns[2];
+    Bitmask<PATTERN_SIZE, PATTERN_BASE> base_pattern;
+    Bitmask<BUFFER_SIZE, PATTERN_BASE>  recalibrated_patterns[2];
     uint32_t pattern_sizes[2];
     uint8_t index;
 
@@ -297,60 +337,39 @@ int main()
 
     Usart1<> usart1(115200);
     UsartPollingOutputStream outputStream(usart1);
-    
-    while (false) {
-        unsigned char byte = 0x0F;
-        unsigned char buffer[100];
-        for (int i = 0; i != 100; i++) {
-            buffer[i] = byte;
-            byte = ~byte;
-        }
 
-        Spi1<>::Parameters spi_params;
-        spi_params.spi_baudRatePrescaler = SPI_BaudRatePrescaler_16;
-        spi_params.spi_direction = SPI_Direction_1Line_Tx;
-
-        Spi1<> spi(spi_params);
-        Spi1TxDmaChannel<
-             SpiDmaWriterFeature<
-                   Spi1PeripheralTraits, DMA_Priority_High> > dmaSender;
-
-        dmaSender.beginWrite(buffer, 100);
-        dmaSender.waitUntilComplete();
-        spi.waitForIdle();
-        MillisecondTimer::delay(20);
-    }
-
-    const int PARTS = 100;
-    bool state = false;
-    auto& p = pattern.get_patern();
+    const int PARTS = 10;
+    bool state = true;
+    auto p = pattern.get_patern().front();
     for (int i = 0, index = 0; i != PARTS; i++) {
         state = !state;
-        for (int j = 0; j != p.size() / PARTS; j++, index++) {
-            p[index] = state;
+        for (int j = 0; j != pattern.get_patern().size() / PARTS; j++, index++, p.next()) {
+            p = state;
         }
     }
     
-    for (int i = 0; i != 150; i++)
-        p[i] = true;
-    
-    unsigned char byte = 0xF;
     auto pp = pattern.get_patern().raw();
-    /*for (int i = 0; i != 100; i++) {
-        pp[i] = byte;
-        byte = ~byte;
+    /*for (int i = 0; i != 128; i++)
+        p[i] = true;*/
+    
+    /*unsigned int word = 0xFFFFFFFF;
+    auto pp = pattern.get_patern().raw();
+    for (int i = 0, index = 0; i != PARTS; i++) {
+        word = ~word;
+        for (int j = 0; j != 3000 / PARTS; j++, index++) {
+           *(BITBAND_SRAM(pp + index / 8, index % 8)) = word;
+        }
     }*/
     
-    for (int i = 0; i != 100; i++) {
-        for (int u = 7; u >= 0; u--)
-            if (pp[i] & (1 << u))
+    /*for (int i = 0; i != p.size(); i++) {
+            if (p.get(i))
                 outputStream << "1";
             else
                 outputStream << "0";
     }
-    outputStream << "\n";
-    pattern.recalibrate_pattern(3240);
-    pattern.recalibrate_pattern(3240);
+    outputStream << "\n";*/
+    //pattern.recalibrate_pattern(3240);
+    //pattern.recalibrate_pattern(3240);
     
     int count = 0;
     pc[DIR].reset();
@@ -361,5 +380,6 @@ int main()
     	//uint16_t pulse = counter.get_pulse();
     	pattern.draw_pattern(0);
     	counter.clear_pulse_flag();
+    	MillisecondTimer::delay(5);
 	}
 }
