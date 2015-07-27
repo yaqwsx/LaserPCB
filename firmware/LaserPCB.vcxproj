@@ -63,6 +63,10 @@
   <ItemGroup>
     <ClCompile Include="C:\Users\Jan\AppData\Local\VisualGDB\EmbeddedBSPs\arm-eabi\com.sysprogs.arm.stm32\STM32F1xxxx\StartupFiles\startup_stm32f103xb.c" />
     <ClCompile Include="LibraryHacks.cpp" />
+    <ClCompile Include="libs\fatfs\fattime.c" />
+    <ClCompile Include="libs\fatfs\ff.c" />
+    <ClCompile Include="libs\fatfs\option\unicode.c" />
+    <ClCompile Include="libs\fatfs\sd_spi_stm32.c" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="system_stm32f10x.c" />
   </ItemGroup>
@@ -71,6 +75,16 @@
     <None Include="Makefile" />
     <None Include="release.mak" />
     <None Include="stm32.mak" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="libs\fatfs\diskio.h" />
+    <ClInclude Include="libs\fatfs\fattime.h" />
+    <ClInclude Include="libs\fatfs\ff.h" />
+    <ClInclude Include="libs\fatfs\ffconf.h" />
+    <ClInclude Include="libs\fatfs\integer.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <Text Include="libs\fatfs\00readme.txt" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

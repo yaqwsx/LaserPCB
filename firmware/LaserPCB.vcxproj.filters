@@ -23,6 +23,15 @@
     <Filter Include="Header files\Device-specific files">
       <UniqueIdentifier>{6036c82f-10a3-4b1e-9f27-ff5718befa7a}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Source files\libs">
+      <UniqueIdentifier>{7c0b06d0-3520-4397-aad8-47b3f6c692a4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source files\libs\fatfs">
+      <UniqueIdentifier>{cee49e86-424b-4754-a418-3dc881f74b39}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source files\libs\fatfs\option">
+      <UniqueIdentifier>{e4de6d00-7fa8-47d9-8721-a3ebfbec4477}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="system_stm32f10x.c">
@@ -37,6 +46,18 @@
     <ClCompile Include="LibraryHacks.cpp">
       <Filter>Source files</Filter>
     </ClCompile>
+    <ClCompile Include="libs\fatfs\sd_spi_stm32.c">
+      <Filter>Source files\libs\fatfs</Filter>
+    </ClCompile>
+    <ClCompile Include="libs\fatfs\fattime.c">
+      <Filter>Source files\libs\fatfs</Filter>
+    </ClCompile>
+    <ClCompile Include="libs\fatfs\ff.c">
+      <Filter>Source files\libs\fatfs</Filter>
+    </ClCompile>
+    <ClCompile Include="libs\fatfs\option\unicode.c">
+      <Filter>Source files\libs\fatfs\option</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="Makefile" />
@@ -49,5 +70,27 @@
     <None Include="stm32.mak">
       <Filter>Source files\Device-specific files</Filter>
     </None>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="libs\fatfs\ffconf.h">
+      <Filter>Source files\libs\fatfs</Filter>
+    </ClInclude>
+    <ClInclude Include="libs\fatfs\integer.h">
+      <Filter>Source files\libs\fatfs</Filter>
+    </ClInclude>
+    <ClInclude Include="libs\fatfs\diskio.h">
+      <Filter>Source files\libs\fatfs</Filter>
+    </ClInclude>
+    <ClInclude Include="libs\fatfs\fattime.h">
+      <Filter>Source files\libs\fatfs</Filter>
+    </ClInclude>
+    <ClInclude Include="libs\fatfs\ff.h">
+      <Filter>Source files\libs\fatfs</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <Text Include="libs\fatfs\00readme.txt">
+      <Filter>Source files\libs\fatfs</Filter>
+    </Text>
   </ItemGroup>
 </Project>

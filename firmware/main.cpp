@@ -8,6 +8,8 @@
 
 #include <stdlib.h>
 
+#include "libs/fatfs/ff.h"
+
 using namespace stm32plus;
 
 // bitband type
@@ -270,7 +272,8 @@ public:
         dmaSender.beginWrite(recalibrated_patterns[index].raw(), pattern_sizes[index]);
 
         // Prepare new image
-        // ToDo:
+        /*if(last_period < 6000)
+            recalibrate_pattern(last_period);*/
 
         dmaSender.waitUntilComplete();
         spi.waitForIdle();
@@ -294,11 +297,11 @@ public:
         const div_t result = div(header_bits, 8 * sizeof(uint32_t));
         uint32_t* raw_header = (uint32_t*)pat.raw();
         // Set the whole part
-        memset(raw_header, 0xFFFFFFFF, result.quot * sizeof(uint32_t));
+        memset(raw_header, 0x0, result.quot * sizeof(uint32_t));
         // Set the partial part
         Bit bit(raw_header + result.quot, 0);
         for (uint8_t i = 0; i != result.rem; i++) {
-            bit = true;
+            bit = false;
             bit.next();
         }
 
@@ -331,13 +334,21 @@ private:
 };
 
 GpioC<DefaultDigitalOutputFeature<13>, DefaultDigitalOutputFeature<14> > pc;
-const int STEP = 13;
-const int DIR = 14;
+const int STEP_PIN = 13;
+const int DIR_PIN = 14;
 
 const int PATTERN_SIZE = 3000;
 
 PeriodCounter counter;
 Pattern<PATTERN_SIZE, 4000> pattern(60000, 6000);
+
+extern "C" {
+    void disk_timerproc(void);
+}
+
+void delay_callback(TimerEventType, unsigned char) {
+    disk_timerproc();
+}
 
 int main()
 {
@@ -346,8 +357,47 @@ int main()
 
     Usart1<> usart1(115200);
     UsartPollingOutputStream outputStream(usart1);
+    
+    Timer2<
+        Timer2InternalClockFeature,       // the timer clock source is APB2 (APB on the F0)
+        Timer2InterruptFeature            // gain access to interrupt functionality
+      > timer;
+    
+    timer.TimerInterruptEventSender.insertSubscriber(
+          TimerInterruptEventSourceSlot::bind(delay_callback)
+        );
+    timer.setTimeBaseByFrequency(10000, 1000, TIM_CounterMode_CenterAligned3);
+    timer.clearPendingInterruptsFlag(TIM_IT_Update);
+    timer.enableInterrupts(TIM_IT_Update);
+    timer.enablePeripheral();
+    
+    while (true) {
+        FATFS FatFs;
+        FIL fil;
+        uint32_t total, free;
+        
+        outputStream << "Trying to open drive\n";
+        if (f_mount(0, &FatFs) == FR_OK) {
+            outputStream << "Device opened!\n";
+            if (f_open(&fil, "test.txt", FA_OPEN_ALWAYS | FA_READ) == FR_OK) {
+                outputStream << "File opened!\n";
+                char buffer[128];
+                f_gets(buffer, 128, &fil);
+                outputStream << buffer;
+            }
+            else {
+                outputStream  << "Cannot open file!\n";
+            }
+            f_close(&fil);
+        }
+        else {
+            outputStream << "Cannot open drive!\n";
+        }
+        f_mount(0, 0);
+        while (true);
+    }
 
-    const unsigned int PARTS = 10;
+    const unsigned int PARTS = 100;
     bool state = true;
     auto p = pattern.get_patern().front();
     for (unsigned int i = 0, index = 0; i != PARTS; i++) {
@@ -380,14 +430,13 @@ int main()
     pattern.recalibrate_pattern(3240);
     pattern.recalibrate_pattern(3240);
     
-    pc[DIR].reset();
+    pc[DIR_PIN].reset();
 	for (;;) {
-    	//GpioA<DefaultDigitalOutputFeature<7>> pa;
-    	//pa[7].set();
-    	//counter.wait_for_pulse();
-    	//uint16_t pulse = counter.get_pulse();
-    	pattern.draw_pattern(0);
+    	GpioA<DefaultDigitalOutputFeature<7>> pa;
+    	pa[7].reset();
+        //counter.wait_for_pulse();
+    	uint16_t pulse = counter.get_pulse();
+    	pattern.draw_pattern(pulse);
     	counter.clear_pulse_flag();
-    	MillisecondTimer::delay(5);
 	}
 }

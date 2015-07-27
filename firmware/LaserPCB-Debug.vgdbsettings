@@ -145,5 +145,8 @@
   <UserDefinedVariables />
   <CodeSense>
     <Enabled>Unknown</Enabled>
+    <ExtraSettings>
+      <HideErrorsInSystemHeaders>false</HideErrorsInSystemHeaders>
+    </ExtraSettings>
   </CodeSense>
 </VisualGDBProjectSettings2>
